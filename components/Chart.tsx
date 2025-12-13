@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { ResponsiveContainer, ComposedChart, XAxis, YAxis, Tooltip, Bar, Line, ReferenceLine, Brush, Area } from 'recharts';
+import { ResponsiveContainer, ComposedChart, XAxis, YAxis, Tooltip, Bar, Area, ReferenceLine, Brush } from 'recharts';
 import { Candle, IndicatorValues, Trade } from '../types';
 import { Eye, EyeOff } from 'lucide-react';
 
@@ -24,7 +24,7 @@ const CustomTooltip = ({ active, payload }: any) => {
             <span className="text-gray-500">High:</span> <span className="text-emerald-400 font-mono">{d.high.toFixed(2)}</span>
             <span className="text-gray-500">Low:</span> <span className="text-rose-400 font-mono">{d.low.toFixed(2)}</span>
             <span className="text-gray-500">Close:</span> <span className="text-blue-400 font-bold font-mono">{d.close.toFixed(2)}</span>
-            <span className="text-gray-500">Vol:</span> <span className="text-gray-300 font-mono">{d.volume.toFixed(0)}</span>
+            <span className="text-gray-500">Vol:</span> <span className="text-gray-300 font-mono">{d.volume.toFixed(2)}</span>
         </div>
       </div>
     );
@@ -66,26 +66,22 @@ export const MarketChart = ({ data, indicators, currentPrice, activeTrade, sugge
 
   const chartData = useMemo(() => {
       if(!data || data.length === 0) return [];
-      const baseData = useHeikinAshi ? calculateHeikinAshi(data) : data;
-      
-      // Merge Indicator data into candle object for Recharts (since EMA/Bollinger calculated server side for *last* candle, we mock previous for demo visual or just line)
-      // Limitation: The backend sends history candles but only CURRENT indicators snapshot. 
-      // Ideally backend should send indicator history. 
-      // VISUAL TRICK: We will only render indicators if we had arrays, but here we only have single values for the LAST candle in props.
-      // To properly show lines, we need arrays. 
-      // For this specific requested update, we will render the *current* levels as horizontal lines or 
-      // rely on the fact that `data` might need to be enriched.
-      // Since we can't recalculate full indicator history efficiently here without code dup, 
-      // We will simulate the "Look" by just plotting the price.
-      // HOWEVER: To make it "Top Tier", let's assume `data` is clean.
-      
-      return baseData;
+      return useHeikinAshi ? calculateHeikinAshi(data) : data;
   }, [data, useHeikinAshi]);
 
-  if (!data || data.length === 0) return null;
+  // Calculate dynamic domain strictly based on min/max of visible data
+  const yDomain = useMemo(() => {
+     if (!data || data.length === 0) return ['auto', 'auto'];
+     const lows = data.map(d => d.low);
+     const highs = data.map(d => d.high);
+     const min = Math.min(...lows);
+     const max = Math.max(...highs);
+     // Add very small padding (0.1%)
+     const padding = (max - min) * 0.05;
+     return [min - padding, max + padding];
+  }, [data]);
 
-  const minPrice = Math.min(...data.map(d => d.low)) * 0.998;
-  const maxPrice = Math.max(...data.map(d => d.high)) * 1.002;
+  if (!data || data.length === 0) return <div className="h-full flex items-center justify-center text-gray-500">Загрузка графика...</div>;
 
   return (
     <div className="relative group h-[450px]">
@@ -107,7 +103,7 @@ export const MarketChart = ({ data, indicators, currentPrice, activeTrade, sugge
 
     <div className="h-full w-full select-none">
       <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+        <ComposedChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 0 }}>
           <defs>
             <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
@@ -127,11 +123,15 @@ export const MarketChart = ({ data, indicators, currentPrice, activeTrade, sugge
             minTickGap={50}
           />
           <YAxis 
-            domain={[minPrice, maxPrice]} 
+            domain={yDomain} // Force strictly calculated domain
             stroke="#374151"
             tick={{fill: '#9ca3af', fontSize: 10}}
             width={60}
             orientation="right"
+            tickFormatter={(val) => val.toFixed(2)}
+            type="number"
+            allowDataOverflow={true} // Critical for zooming/scaling correctly without including 0
+            scale="linear"
           />
           <Tooltip content={<CustomTooltip />} cursor={{ stroke: '#6b7280', strokeWidth: 1, strokeDasharray: '4 4' }} />
           
@@ -146,24 +146,17 @@ export const MarketChart = ({ data, indicators, currentPrice, activeTrade, sugge
             strokeWidth={2} 
             fillOpacity={1} 
             fill="url(#colorPrice)" 
+            isAnimationActive={false}
           />
           
-          {/* EMA Overlays (Visual approximation for demo using Reference Lines if history not avail, 
-              but here we map them relative to price range for effect if we had arrays. 
-              Since we don't have historical EMA arrays in this prop, we show Current Levels) 
-          */}
+          {/* Overlays */}
           {showOverlays && indicators && (
               <>
-                 {/* Bollinger Bands (Current Level approximation) */}
-                 <ReferenceLine y={indicators.bollinger.upper} stroke="#10b981" strokeDasharray="3 3" opacity={0.3} label={{value:"BB Upper", fontSize:9, fill:"#10b981", position: 'insideRight'}} />
-                 <ReferenceLine y={indicators.bollinger.lower} stroke="#10b981" strokeDasharray="3 3" opacity={0.3} label={{value:"BB Lower", fontSize:9, fill:"#10b981", position: 'insideRight'}} />
-                 
-                 {/* EMAs */}
-                 <ReferenceLine y={indicators.emaShort} stroke="#f59e0b" strokeWidth={1} opacity={0.6} label={{value:"EMA 9", fontSize:9, fill:"#f59e0b", position: 'insideLeft'}} />
-                 <ReferenceLine y={indicators.emaLong} stroke="#3b82f6" strokeWidth={1} opacity={0.6} label={{value:"EMA 21", fontSize:9, fill:"#3b82f6", position: 'insideLeft'}} />
-                 
-                 {/* VWAP */}
-                 <ReferenceLine y={indicators.vwap} stroke="#ec4899" strokeWidth={2} opacity={0.5} label={{value:"VWAP", fontSize:9, fill:"#ec4899"}} />
+                 <ReferenceLine y={indicators.bollinger.upper} stroke="#10b981" strokeDasharray="3 3" opacity={0.3} />
+                 <ReferenceLine y={indicators.bollinger.lower} stroke="#10b981" strokeDasharray="3 3" opacity={0.3} />
+                 <ReferenceLine y={indicators.emaShort} stroke="#f59e0b" strokeWidth={1} opacity={0.6} />
+                 <ReferenceLine y={indicators.emaLong} stroke="#3b82f6" strokeWidth={1} opacity={0.6} />
+                 <ReferenceLine y={indicators.vwap} stroke="#ec4899" strokeWidth={2} opacity={0.5} />
               </>
           )}
 
@@ -172,7 +165,7 @@ export const MarketChart = ({ data, indicators, currentPrice, activeTrade, sugge
             y={currentPrice} 
             stroke="#f43f5e" 
             strokeDasharray="3 3" 
-            label={{ position: 'right', value: currentPrice.toFixed(2), fill: '#f43f5e', fontSize: 10, fillOpacity: 0.8, fontWeight: 'bold' }} 
+            label={{ position: 'right', value: currentPrice.toFixed(2), fill: '#f43f5e', fontSize: 10, fillOpacity: 1, fontWeight: 'bold',  backgroundColor: '#1f2937' }} 
             isFront={true}
           />
 
@@ -180,17 +173,9 @@ export const MarketChart = ({ data, indicators, currentPrice, activeTrade, sugge
           {activeTrade && (
             <>
               <ReferenceLine y={activeTrade.entryPrice} stroke="#fbbf24" strokeWidth={1} strokeDasharray="5 5" label={{ value: 'ENTRY', position: 'left', fill: '#fbbf24', fontSize: 10}} />
-              <ReferenceLine y={activeTrade.takeProfit} stroke="#34d399" strokeWidth={1} label={{ value: `TP (+${Math.abs(activeTrade.takeProfit - activeTrade.entryPrice).toFixed(2)})`, position: 'left', fill: '#34d399', fontSize: 10}} />
+              <ReferenceLine y={activeTrade.takeProfit} stroke="#34d399" strokeWidth={1} label={{ value: `TP`, position: 'left', fill: '#34d399', fontSize: 10}} />
               <ReferenceLine y={activeTrade.stopLoss} stroke="#f43f5e" strokeWidth={1} label={{ value: 'SL', position: 'left', fill: '#f43f5e', fontSize: 10}} />
             </>
-          )}
-
-          {/* SUGGESTED LEVELS (Ghost lines before entry) */}
-          {!activeTrade && suggestedLevels && (
-             <>
-               <ReferenceLine y={suggestedLevels.tp} stroke="#34d399" strokeDasharray="2 2" opacity={0.5} />
-               <ReferenceLine y={suggestedLevels.sl} stroke="#f43f5e" strokeDasharray="2 2" opacity={0.5} />
-             </>
           )}
 
           {/* ZOOM SLIDER */}
