@@ -18,10 +18,10 @@ const getHeaders = () => {
     };
 };
 
-const generateMockCandles = (pair: string, count: number, startPrice?: number): Candle[] => {
+export const generateMockCandles = (pair: string, count: number, startPrice?: number): Candle[] => {
   const now = Date.now();
   const candles: Candle[] = [];
-  let price = startPrice || (pair.includes('BTC') ? 67000 : pair.includes('ETH') ? 3600 : 150);
+  let price = startPrice || (pair.includes('BTC') ? 67000 : pair.includes('ETH') ? 3600 : pair.includes('SOL') ? 150 : 10);
   
   for (let i = count - 1; i >= 0; i--) {
     const time = now - i * 60000 * 5; 
@@ -37,11 +37,22 @@ const generateMockCandles = (pair: string, count: number, startPrice?: number): 
       close,
       high,
       low,
-      volume: Math.floor(Math.random() * 1000)
+      volume: Math.floor(Math.random() * 1000 + 500)
     });
     price = close;
   }
   return candles;
+};
+
+// --- Connection Check ---
+export const checkConnection = async (): Promise<boolean> => {
+    try {
+        // Simple ping to system time or a major pair to check connectivity
+        const result = await fetchCurrentTicker('BTC_USDT');
+        return !!result;
+    } catch (e) {
+        return false;
+    }
 };
 
 export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): Promise<Candle[]> => {
@@ -56,8 +67,9 @@ export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): P
     const response = await fetch(fetchUrl, { headers: getHeaders() });
     
     if (!response.ok) {
+        // Fallback to mock silently if API fails (common with CORS/Rate limits on free tiers)
         console.warn(`Gate API Error ${response.status}: ${response.statusText}`);
-        throw new Error(`Gate API Error: ${response.statusText}`);
+        throw new Error('API Error');
     }
     
     const data = await response.json();

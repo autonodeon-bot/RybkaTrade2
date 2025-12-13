@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Settings, Wifi, WifiOff, BarChart3, LayoutDashboard, Eye, Activity, Globe, Cpu, PlayCircle, StopCircle, RefreshCw, Trash2 } from 'lucide-react';
+import { Settings, Wifi, WifiOff, BarChart3, LayoutDashboard, Eye, Activity, Globe, Cpu, PlayCircle, StopCircle, RefreshCw, Trash2, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { MarketChart } from './components/Chart';
 import { IndicatorCard } from './components/IndicatorCard';
 import { TradeHistory } from './components/TradeHistory';
 import { PortfolioCard } from './components/PortfolioCard';
 import { OrderBook } from './components/OrderBook';
 import { MarketState, Trade, AIAnalysisResult, Portfolio, Timeframe, OrderBookState, PositionType } from './types';
-import { fetchOrderBook } from './services/gateApi';
+import { fetchOrderBook, checkConnection, generateMockCandles } from './services/gateApi';
+import { calculateAllIndicators } from './utils/indicators';
 
 const PAIRS = ['BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'TON_USDT', 'DOGE_USDT'];
 const INITIAL_PORTFOLIO: Portfolio = {
@@ -26,6 +27,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<'CHART' | 'DASHBOARD'>('CHART');
   const [currentTimeframe, setCurrentTimeframe] = useState<Timeframe>('5m');
   const [serverStatus, setServerStatus] = useState<'IDLE' | 'ANALYZING' | 'ERROR'>('IDLE');
+  const [gateStatus, setGateStatus] = useState<'PENDING' | 'OK' | 'ERROR'>('PENDING');
   const [orderBook, setOrderBook] = useState<OrderBookState | undefined>(undefined);
 
   // --- Client Side State (Persisted) ---
@@ -48,6 +50,15 @@ export default function App() {
             console.error("Failed to load state", e);
         }
     }
+
+    // Check Gate.io Connection
+    const testGate = async () => {
+        const isOk = await checkConnection();
+        setGateStatus(isOk ? 'OK' : 'ERROR');
+        if (!isOk) addLog('Connection to Gate.io API failed. Switching to Demo Data Mode.', 'warn');
+    };
+    testGate();
+
   }, []);
 
   // Save State on Change
@@ -74,19 +85,67 @@ export default function App() {
 
   // --- Core Analysis Function ---
   const performAnalysis = async (pairToAnalyze: string) => {
+    setServerStatus('ANALYZING');
+    
     try {
-        setServerStatus('ANALYZING');
-        // Call Serverless Function for Heavy Analysis
-        const res = await fetch('/api/cron', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pair: pairToAnalyze })
-        });
-        
-        if (!res.ok) throw new Error("API Error");
-        const data = await res.json();
-        
-        if (data.success) {
+        // Try Serverless Function first
+        let data;
+        let fetchSuccess = false;
+
+        try {
+            const res = await fetch('/api/cron', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pair: pairToAnalyze })
+            });
+            
+            if (res.ok) {
+                const json = await res.json();
+                if (json.success) {
+                    data = json;
+                    fetchSuccess = true;
+                }
+            }
+        } catch (serverError) {
+            console.warn("Server API failed, switching to client-side fallback", serverError);
+        }
+
+        // Fallback: Generate Local Data if Server Failed
+        if (!fetchSuccess) {
+            console.log("Generating local fallback data for", pairToAnalyze);
+            const candles = generateMockCandles(pairToAnalyze, 100);
+            const indicators = calculateAllIndicators(candles);
+            const currentPrice = candles[candles.length - 1].close;
+            
+            // Simple Local "AI" Logic for Demo
+            const rsi = indicators.rsi;
+            const macd = indicators.macd.histogram;
+            let decision: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
+            let confidence = 50;
+
+            if (rsi < 30 && macd > 0) { decision = 'BUY'; confidence = 85; }
+            else if (rsi > 70 && macd < 0) { decision = 'SELL'; confidence = 85; }
+            else if (rsi < 40) { decision = 'HOLD'; confidence = 60; } // Bias Buy
+            
+            data = {
+                success: true,
+                price: currentPrice,
+                candles,
+                indicators,
+                analysis: {
+                    pair: pairToAnalyze,
+                    decision,
+                    confidence,
+                    recommendedSL: decision === 'BUY' ? currentPrice * 0.98 : currentPrice * 1.02,
+                    recommendedTP: decision === 'BUY' ? currentPrice * 1.04 : currentPrice * 0.96,
+                    riskRewardRatio: 2,
+                    reasoning: `[OFFLINE MODE] RSI: ${rsi.toFixed(1)}, MACD: ${macd.toFixed(4)}. Market Structure indicates ${decision}.`,
+                    details: []
+                }
+            };
+        }
+
+        if (data && data.success) {
             const { price, analysis, indicators, candles } = data;
             
             // Update Market Data State
@@ -107,12 +166,14 @@ export default function App() {
                 [pairToAnalyze]: analysis
             }));
 
-            // --- EXECUTE TRADING LOGIC (CLIENT SIDE) ---
             handleTradingLogic(pairToAnalyze, price, analysis);
+            
+            if (fetchSuccess) setGateStatus('OK');
             return true;
         }
+
     } catch (e) {
-        console.error("Analysis Error:", e);
+        console.error("Critical Analysis Error:", e);
         setServerStatus('ERROR');
         return false;
     } finally {
@@ -273,9 +334,14 @@ export default function App() {
             <h1 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
                 Gate.io Autonomous <span className="text-[10px] bg-yellow-500 text-black px-1 rounded font-bold">DEMO</span>
             </h1>
-            <div className="flex items-center gap-3">
-               <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border bg-blue-500/10 text-blue-400 border-blue-500/30">
-                 NETLIFY
+            <div className="flex items-center gap-3 mt-1">
+               <span className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border transition-colors ${
+                   gateStatus === 'OK' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 
+                   gateStatus === 'ERROR' ? 'bg-rose-500/10 text-rose-400 border-rose-500/30' : 
+                   'bg-gray-700/50 text-gray-400 border-gray-600'
+               }`}>
+                 {gateStatus === 'OK' ? <CheckCircle2 size={12} /> : gateStatus === 'ERROR' ? <XCircle size={12} /> : <Loader2 size={12} className="animate-spin" />}
+                 GATE.IO
                </span>
                <span className="text-[10px] text-gray-500 font-mono">
                    AI-BOT: {active ? 'RUNNING' : 'PAUSED'}
