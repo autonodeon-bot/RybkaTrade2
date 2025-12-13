@@ -1,0 +1,29 @@
+{
+  "name": "gateio-ai-trader",
+  "version": "1.0.3",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "lucide-react": "^0.395.0",
+    "recharts": "^2.12.7",
+    "@google/genai": "^0.1.2",
+    "@tensorflow/tfjs": "^4.20.0",
+    "@vercel/node": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.5.2",
+    "vite": "^5.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

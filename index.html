@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gate.io Autonomous Cloud</title>
+    <!-- Favicon -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <style>
+      body { background-color: #0f172a; color: #e2e8f0; font-family: sans-serif; }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: #1e293b; }
+      ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+      #error-display { display: none; padding: 20px; background: #450a0a; color: #fecaca; border: 1px solid #f87171; margin: 20px; border-radius: 8px; }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "@google/genai": "https://esm.sh/@google/genai@^1.33.0",
+    "lucide-react": "https://esm.sh/lucide-react@^0.561.0",
+    "recharts": "https://esm.sh/recharts@^3.5.1",
+    "@tensorflow/tfjs": "https://esm.sh/@tensorflow/tfjs@^4.22.0",
+    "@vercel/node": "https://esm.sh/@vercel/node@^5.5.15",
+    "vite": "https://esm.sh/vite@^7.2.7",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2"
+  }
+}
+</script>
+</head>
+  <body>
+    <!-- Error Container -->
+    <div id="error-display"></div>
+
+    <div id="root">
+      <!-- Loading State that is replaced by React -->
+      <div style="height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #64748b;">
+        <svg style="width: 48px; height: 48px; margin-bottom: 16px; animation: spin 1s linear infinite;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle style="opacity: 0.25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path style="opacity: 0.75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <h2 style="font-size: 1.25rem; font-weight: 600; color: white;">Загрузка системы...</h2>
+        <p style="margin-top: 8px; font-size: 0.875rem;">Инициализация нейросетей и индикаторов</p>
+      </div>
+      <style>
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      </style>
+    </div>
+
+    <!-- Error Trap Script -->
+    <script>
+      window.onerror = function(message, source, lineno, colno, error) {
+        const display = document.getElementById('error-display');
+        if (display) {
+          display.style.display = 'block';
+          display.innerHTML = `<strong>Критическая ошибка запуска:</strong><br/>${message}<br/><small>${source}:${lineno}</small>`;
+          console.error("Global Error Caught:", error);
+        }
+      };
+    </script>
+
+    <!-- Entry Point for Vite -->
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
