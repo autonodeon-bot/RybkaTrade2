@@ -1,6 +1,6 @@
 {
   "name": "gateio-ai-trader",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
   "scripts": {
     "dev": "vite",
@@ -14,7 +14,7 @@
     "recharts": "^2.12.7",
     "@google/genai": "*",
     "@tensorflow/tfjs": "^4.20.0",
-    "@vercel/node": "^3.2.0"
+    "@netlify/functions": "^2.6.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",
