@@ -18,32 +18,6 @@ const getHeaders = () => {
     };
 };
 
-export const generateMockCandles = (pair: string, count: number, startPrice?: number): Candle[] => {
-  const now = Date.now();
-  const candles: Candle[] = [];
-  let price = startPrice || (pair.includes('BTC') ? 67000 : pair.includes('ETH') ? 3600 : pair.includes('SOL') ? 150 : 10);
-  
-  for (let i = count - 1; i >= 0; i--) {
-    const time = now - i * 60000 * 5; 
-    const volatility = 0.003;
-    const change = price * volatility * (Math.random() - 0.5);
-    const close = price + change;
-    const high = Math.max(price, close) * (1 + Math.random() * 0.002);
-    const low = Math.min(price, close) * (1 - Math.random() * 0.002);
-    
-    candles.push({
-      time,
-      open: price,
-      close,
-      high,
-      low,
-      volume: Math.floor(Math.random() * 1000 + 500)
-    });
-    price = close;
-  }
-  return candles;
-};
-
 // --- Connection Check ---
 export const checkConnection = async (): Promise<boolean> => {
     try {
@@ -104,7 +78,6 @@ export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): P
               try {
                 data = JSON.parse(rawData.contents);
               } catch (e) {
-                  // Sometimes contents is not JSON if error page returned
                   throw new Error("Proxy returned invalid content");
               }
           }
@@ -132,9 +105,8 @@ export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): P
       console.warn("Binance Fallback failed", binanceError);
   }
 
-  // 3. Last Resort: Mock Data
-  console.warn(`All APIs failed for ${pair}, using mock data`);
-  return generateMockCandles(pair, 100);
+  // 3. FAIL: Throw Error instead of returning Mock Data
+  throw new Error(`Failed to fetch real data for ${pair} from all sources.`);
 };
 
 export const fetchCurrentTicker = async (pair: string): Promise<{ last: number, volume: number } | null> => {

@@ -6,8 +6,7 @@ import { TradeHistory } from './components/TradeHistory';
 import { PortfolioCard } from './components/PortfolioCard';
 import { OrderBook } from './components/OrderBook';
 import { MarketState, Trade, AIAnalysisResult, Portfolio, Timeframe, OrderBookState, PositionType } from './types';
-import { fetchOrderBook, checkConnection, generateMockCandles } from './services/gateApi';
-import { calculateAllIndicators } from './utils/indicators';
+import { fetchOrderBook, checkConnection } from './services/gateApi';
 
 const PAIRS = ['BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'TON_USDT', 'DOGE_USDT'];
 const INITIAL_PORTFOLIO: Portfolio = {
@@ -55,7 +54,7 @@ export default function App() {
     const testGate = async () => {
         const isOk = await checkConnection();
         setGateStatus(isOk ? 'OK' : 'ERROR');
-        if (!isOk) addLog('Connection to Gate.io API failed. Switching to Demo Data Mode.', 'warn');
+        if (!isOk) addLog('Внимание: Проблема с подключением к API биржи.', 'error');
     };
     testGate();
 
@@ -88,61 +87,24 @@ export default function App() {
     setServerStatus('ANALYZING');
     
     try {
-        // Try Serverless Function first
         let data;
-        let fetchSuccess = false;
-
-        try {
-            const res = await fetch('/api/cron', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ pair: pairToAnalyze })
-            });
-            
-            if (res.ok) {
-                const json = await res.json();
-                if (json.success) {
-                    data = json;
-                    fetchSuccess = true;
-                }
+        
+        // Request to serverless function (which fetches Real Data)
+        const res = await fetch('/api/cron', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pair: pairToAnalyze })
+        });
+        
+        if (res.ok) {
+            const json = await res.json();
+            if (json.success) {
+                data = json;
+            } else {
+                throw new Error(json.error || 'API returned failure');
             }
-        } catch (serverError) {
-            console.warn("Server API failed, switching to client-side fallback", serverError);
-        }
-
-        // Fallback: Generate Local Data if Server Failed
-        if (!fetchSuccess) {
-            console.log("Generating local fallback data for", pairToAnalyze);
-            const candles = generateMockCandles(pairToAnalyze, 100);
-            const indicators = calculateAllIndicators(candles);
-            const currentPrice = candles[candles.length - 1].close;
-            
-            // Simple Local "AI" Logic for Demo
-            const rsi = indicators.rsi;
-            const macd = indicators.macd.histogram;
-            let decision: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
-            let confidence = 50;
-
-            if (rsi < 30 && macd > 0) { decision = 'BUY'; confidence = 85; }
-            else if (rsi > 70 && macd < 0) { decision = 'SELL'; confidence = 85; }
-            else if (rsi < 40) { decision = 'HOLD'; confidence = 60; } // Bias Buy
-            
-            data = {
-                success: true,
-                price: currentPrice,
-                candles,
-                indicators,
-                analysis: {
-                    pair: pairToAnalyze,
-                    decision,
-                    confidence,
-                    recommendedSL: decision === 'BUY' ? currentPrice * 0.98 : currentPrice * 1.02,
-                    recommendedTP: decision === 'BUY' ? currentPrice * 1.04 : currentPrice * 0.96,
-                    riskRewardRatio: 2,
-                    reasoning: `[OFFLINE MODE] RSI: ${rsi.toFixed(1)}, MACD: ${macd.toFixed(4)}. Market Structure indicates ${decision}.`,
-                    details: []
-                }
-            };
+        } else {
+            throw new Error(`Server API Error: ${res.status}`);
         }
 
         if (data && data.success) {
@@ -168,16 +130,18 @@ export default function App() {
 
             handleTradingLogic(pairToAnalyze, price, analysis);
             
-            if (fetchSuccess) setGateStatus('OK');
+            setGateStatus('OK');
             return true;
         }
 
-    } catch (e) {
+    } catch (e: any) {
         console.error("Critical Analysis Error:", e);
         setServerStatus('ERROR');
+        addLog(`Ошибка получения данных для ${pairToAnalyze}: ${e.message}`, 'error');
+        setGateStatus('ERROR');
         return false;
     } finally {
-        setServerStatus('IDLE');
+        if (serverStatus !== 'ERROR') setServerStatus('IDLE');
     }
   };
 
@@ -341,7 +305,7 @@ export default function App() {
                    'bg-gray-700/50 text-gray-400 border-gray-600'
                }`}>
                  {gateStatus === 'OK' ? <CheckCircle2 size={12} /> : gateStatus === 'ERROR' ? <XCircle size={12} /> : <Loader2 size={12} className="animate-spin" />}
-                 GATE.IO
+                 GATE.IO / BINANCE DATA
                </span>
                <span className="text-[10px] text-gray-500 font-mono">
                    AI-BOT: {active ? 'RUNNING' : 'PAUSED'}
@@ -414,13 +378,21 @@ export default function App() {
                 </div>
                 </div>
                 
-                <MarketChart 
-                    data={currentData.candles} 
-                    indicators={currentData.indicators} 
-                    currentPrice={currentData.price} 
-                    activeTrade={activeTrade}
-                    suggestedLevels={currentAnalysis?.decision !== 'HOLD' ? {sl: currentAnalysis?.recommendedSL || 0, tp: currentAnalysis?.recommendedTP || 0} : undefined}
-                />
+                {gateStatus === 'ERROR' && currentData.candles.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-rose-400">
+                        <WifiOff size={48} className="mb-4" />
+                        <p className="text-lg font-bold">Нет подключения к данным</p>
+                        <p className="text-sm text-rose-300/60 mt-2">Gate.io и Binance API недоступны</p>
+                    </div>
+                ) : (
+                    <MarketChart 
+                        data={currentData.candles} 
+                        indicators={currentData.indicators} 
+                        currentPrice={currentData.price} 
+                        activeTrade={activeTrade}
+                        suggestedLevels={currentAnalysis?.decision !== 'HOLD' ? {sl: currentAnalysis?.recommendedSL || 0, tp: currentAnalysis?.recommendedTP || 0} : undefined}
+                    />
+                )}
             </div>
 
             {/* Order Book Panel (Desktop) */}
@@ -435,7 +407,7 @@ export default function App() {
           </div>
 
           <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 shadow-xl">
-             {currentData.indicators ? <IndicatorCard indicators={currentData.indicators} /> : <div className="text-center text-gray-500 text-sm py-4">Waiting for Analysis Update...</div>}
+             {currentData.indicators ? <IndicatorCard indicators={currentData.indicators} /> : <div className="text-center text-gray-500 text-sm py-4">Ожидание данных для анализа...</div>}
           </div>
         </div>
 
