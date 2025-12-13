@@ -1,69 +1,245 @@
-import React, { useState, useEffect } from 'react';
-import { Settings, Wifi, WifiOff, BarChart3, LayoutDashboard, Eye, Activity, Globe, Cpu, PlayCircle, StopCircle, Skull } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Settings, Wifi, WifiOff, BarChart3, LayoutDashboard, Eye, Activity, Globe, Cpu, PlayCircle, StopCircle, RefreshCw, Trash2 } from 'lucide-react';
 import { MarketChart } from './components/Chart';
 import { IndicatorCard } from './components/IndicatorCard';
 import { TradeHistory } from './components/TradeHistory';
 import { PortfolioCard } from './components/PortfolioCard';
 import { OrderBook } from './components/OrderBook';
-import { MarketState, Trade, AIAnalysisResult, Portfolio, Timeframe, OrderBookState } from './types';
+import { MarketState, Trade, AIAnalysisResult, Portfolio, Timeframe, OrderBookState, PositionType } from './types';
 import { fetchOrderBook } from './services/gateApi';
+
+const PAIRS = ['BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'TON_USDT', 'DOGE_USDT'];
+const INITIAL_PORTFOLIO: Portfolio = {
+    balance: 10000,
+    equity: 10000,
+    usedMargin: 0,
+    totalProfit: 0,
+    dayStartBalance: 10000,
+    winRate: 0,
+    profitFactor: 0,
+    tradesCount: 0
+};
 
 export default function App() {
   const [active, setActive] = useState(true);
   const [currentPair, setCurrentPair] = useState('BTC_USDT');
   const [viewMode, setViewMode] = useState<'CHART' | 'DASHBOARD'>('CHART');
   const [currentTimeframe, setCurrentTimeframe] = useState<Timeframe>('5m');
-  const [serverStatus, setServerStatus] = useState<'CONNECTED' | 'DISCONNECTED' | 'CONNECTING'>('CONNECTING');
+  const [serverStatus, setServerStatus] = useState<'IDLE' | 'ANALYZING' | 'ERROR'>('IDLE');
   const [orderBook, setOrderBook] = useState<OrderBookState | undefined>(undefined);
 
-  // State populated from Server API
-  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  // --- Client Side State (Persisted) ---
+  const [portfolio, setPortfolio] = useState<Portfolio>(INITIAL_PORTFOLIO);
+  const [trades, setTrades] = useState<Trade[]>([]);
   const [marketData, setMarketData] = useState<Record<string, MarketState>>({});
   const [lastAnalysis, setLastAnalysis] = useState<Record<string, AIAnalysisResult>>({});
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [logs, setLogs] = useState<{msg: string, type: string}[]>([]);
+  const [logs, setLogs] = useState<{msg: string, type: string, time: number}[]>([]);
 
-  // Polling Loop for State
+  // Load State on Mount
   useEffect(() => {
-    let isMounted = true;
-    const fetchState = async () => {
+    const saved = localStorage.getItem('gateio_bot_state');
+    if (saved) {
         try {
-            const res = await fetch('/api/status', {
-              headers: { 'Accept': 'application/json' }
+            const parsed = JSON.parse(saved);
+            setPortfolio(parsed.portfolio || INITIAL_PORTFOLIO);
+            setTrades(parsed.trades || []);
+            setLogs(parsed.logs || []);
+        } catch (e) {
+            console.error("Failed to load state", e);
+        }
+    }
+  }, []);
+
+  // Save State on Change
+  useEffect(() => {
+    const stateToSave = { portfolio, trades, logs: logs.slice(0, 50) };
+    localStorage.setItem('gateio_bot_state', JSON.stringify(stateToSave));
+  }, [portfolio, trades, logs]);
+
+  const addLog = (msg: string, type: 'info' | 'success' | 'error' | 'warn' = 'info') => {
+      setLogs(prev => [{ msg, type, time: Date.now() }, ...prev].slice(0, 50));
+  };
+
+  const clearState = () => {
+      if(confirm("Reset all trading data?")) {
+          setPortfolio(INITIAL_PORTFOLIO);
+          setTrades([]);
+          setLogs([]);
+          setMarketData({});
+          setLastAnalysis({});
+          localStorage.removeItem('gateio_bot_state');
+          window.location.reload();
+      }
+  };
+
+  // --- Trading Engine Loop ---
+  useEffect(() => {
+    if (!active) return;
+
+    const runTradingCycle = async () => {
+        setServerStatus('ANALYZING');
+        
+        // 1. Select a random pair to analyze (round robin would be better but random avoids clogging)
+        // For demo, we analyze ONE pair per cycle to be gentle on API
+        const pairToAnalyze = PAIRS[Math.floor(Math.random() * PAIRS.length)];
+        
+        try {
+            // Call Serverless Function for Heavy Analysis
+            const res = await fetch('/api/cron', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pair: pairToAnalyze })
             });
-            const contentType = res.headers.get("content-type");
-            if (res.ok && contentType && contentType.indexOf("application/json") !== -1) {
-                const data = await res.json();
-                if (isMounted) {
-                  setPortfolio(data.portfolio);
-                  setTrades(data.trades);
-                  setMarketData(data.marketData);
-                  setLastAnalysis(data.lastAnalysis);
-                  setLogs(data.logs || []);
-                  setServerStatus('CONNECTED');
-                }
-            } else {
-                if (isMounted) setServerStatus('DISCONNECTED');
+            
+            if (!res.ok) throw new Error("API Error");
+            const data = await res.json();
+            
+            if (data.success) {
+                const { price, analysis, indicators } = data;
+                
+                // Update Market Data State
+                setMarketData(prev => ({
+                    ...prev,
+                    [pairToAnalyze]: {
+                        pair: pairToAnalyze,
+                        price,
+                        candles: [], // API doesn't return candles array to save bandwidth, only indicators
+                        timeframe: '5m',
+                        indicators,
+                        lastUpdated: Date.now()
+                    }
+                }));
+
+                setLastAnalysis(prev => ({
+                    ...prev,
+                    [pairToAnalyze]: analysis
+                }));
+
+                // --- EXECUTE TRADING LOGIC (CLIENT SIDE) ---
+                handleTradingLogic(pairToAnalyze, price, analysis);
             }
         } catch (e) {
-            console.error("Failed to connect", e);
-            if (isMounted) setServerStatus('DISCONNECTED');
+            console.error("Cycle Error:", e);
+            setServerStatus('ERROR');
+        } finally {
+            setServerStatus('IDLE');
         }
     };
 
-    const interval = setInterval(fetchState, 2000);
-    fetchState(); 
-    return () => { isMounted = false; clearInterval(interval); };
-  }, []);
+    const interval = setInterval(runTradingCycle, 5000); // Run every 5 seconds
+    runTradingCycle(); // Run once immediately
+    return () => clearInterval(interval);
+  }, [active, portfolio, trades]); // Dependencies ensure we have fresh state
 
-  // Polling Loop for Order Book (Client Side to avoid server load)
+  const handleTradingLogic = (pair: string, currentPrice: number, analysis: AIAnalysisResult) => {
+      // 1. Manage Open Trades (TP/SL)
+      let updatedTrades = [...trades];
+      let updatedPortfolio = { ...portfolio };
+      let stateChanged = false;
+
+      updatedTrades = updatedTrades.map(trade => {
+          if (trade.status === 'CLOSED' || trade.pair !== pair) return trade;
+          
+          let closeReason = null;
+          let pnlValue = 0;
+          const isLong = trade.type === PositionType.LONG;
+
+          // Check SL/TP
+          if (isLong) {
+              if (currentPrice >= trade.takeProfit) closeReason = 'TP Hit';
+              else if (currentPrice <= trade.stopLoss) closeReason = 'SL Hit';
+          } else {
+              if (currentPrice <= trade.takeProfit) closeReason = 'TP Hit';
+              else if (currentPrice >= trade.stopLoss) closeReason = 'SL Hit';
+          }
+
+          // Calculate PnL (Floating)
+          const diff = isLong ? currentPrice - trade.entryPrice : trade.entryPrice - currentPrice;
+          pnlValue = diff * trade.quantity;
+          const pnlPercent = (pnlValue / trade.amount) * 100;
+
+          if (closeReason) {
+              stateChanged = true;
+              const commission = trade.amount * 0.001;
+              const finalPnL = pnlValue - commission;
+              
+              updatedPortfolio.balance += (trade.amount + finalPnL);
+              updatedPortfolio.usedMargin -= trade.amount;
+              updatedPortfolio.totalProfit += finalPnL;
+              updatedPortfolio.tradesCount = (updatedPortfolio.tradesCount || 0) + 1;
+              
+              if (finalPnL > 0) updatedPortfolio.winRate = ((updatedPortfolio.winRate || 0) * (updatedPortfolio.tradesCount-1) + 100) / updatedPortfolio.tradesCount;
+              else updatedPortfolio.winRate = ((updatedPortfolio.winRate || 0) * (updatedPortfolio.tradesCount-1)) / updatedPortfolio.tradesCount;
+
+              addLog(`CLOSED ${pair}: ${closeReason} ($${finalPnL.toFixed(2)})`, finalPnL > 0 ? 'success' : 'error');
+              
+              return { 
+                  ...trade, 
+                  status: 'CLOSED', 
+                  closePrice: currentPrice, 
+                  closeTime: Date.now(), 
+                  pnl: pnlPercent, 
+                  pnlValue: finalPnL, 
+                  reason: closeReason 
+              } as Trade;
+          }
+
+          return { ...trade, pnl: pnlPercent, pnlValue } as Trade;
+      });
+
+      // 2. Open New Trades
+      const hasPosition = updatedTrades.some(t => t.pair === pair && t.status === 'OPEN');
+      if (!hasPosition && analysis.decision !== 'HOLD' && analysis.confidence > 75) {
+          const riskAmount = updatedPortfolio.balance * 0.1; // Use 10% of balance
+          if (updatedPortfolio.balance > riskAmount && riskAmount > 10) {
+              stateChanged = true;
+              const type = analysis.decision === 'BUY' ? PositionType.LONG : PositionType.SHORT;
+              const quantity = riskAmount / currentPrice;
+              
+              const newTrade: Trade = {
+                  id: Date.now().toString(),
+                  pair,
+                  type,
+                  entryPrice: currentPrice,
+                  amount: riskAmount,
+                  quantity,
+                  stopLoss: analysis.recommendedSL,
+                  takeProfit: analysis.recommendedTP,
+                  openTime: Date.now(),
+                  status: 'OPEN',
+                  reason: `AI (${analysis.confidence}%)`,
+                  trailingActive: false,
+                  pnl: 0,
+                  pnlValue: 0
+              };
+
+              updatedTrades.push(newTrade);
+              updatedPortfolio.balance -= riskAmount;
+              updatedPortfolio.usedMargin += riskAmount;
+              
+              addLog(`OPEN ${type} ${pair} @ ${currentPrice.toFixed(2)}`, 'info');
+          }
+      }
+
+      // Recalculate Equity
+      let floatingPnL = 0;
+      updatedTrades.filter(t => t.status === 'OPEN').forEach(t => floatingPnL += (t.pnlValue || 0));
+      updatedPortfolio.equity = updatedPortfolio.balance + updatedPortfolio.usedMargin + floatingPnL;
+
+      if (stateChanged) {
+          setTrades(updatedTrades);
+          setPortfolio(updatedPortfolio);
+      }
+  };
+
+  // Polling Loop for Order Book
   useEffect(() => {
      const fetchOB = async () => {
          const ob = await fetchOrderBook(currentPair);
          if(ob) setOrderBook(ob);
      };
      fetchOB();
-     const interval = setInterval(fetchOB, 3000); // 3s refresh for depth
+     const interval = setInterval(fetchOB, 3000); 
      return () => clearInterval(interval);
   }, [currentPair]);
 
@@ -78,41 +254,33 @@ export default function App() {
       <header className="flex flex-col md:flex-row justify-between items-center mb-4 gap-4 bg-gray-800/50 p-3 rounded-xl border border-gray-700 backdrop-blur-md sticky top-0 z-50 shadow-2xl">
         <div className="flex items-center gap-4">
           <div className="p-2 bg-gradient-to-br from-indigo-600 to-purple-700 rounded-lg shadow-lg relative">
-            <Globe className={`text-white h-5 w-5 ${serverStatus === 'CONNECTED' ? 'animate-pulse' : ''}`} />
-            {serverStatus === 'CONNECTED' && <span className="absolute top-0 right-0 block h-2 w-2 rounded-full ring-2 ring-gray-900 bg-green-400" />}
+            <Globe className={`text-white h-5 w-5 ${serverStatus === 'ANALYZING' ? 'animate-spin' : ''}`} />
+            {serverStatus !== 'ERROR' && <span className="absolute top-0 right-0 block h-2 w-2 rounded-full ring-2 ring-gray-900 bg-green-400" />}
           </div>
           <div>
             <h1 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
-                Gate.io Autonomous Cloud <span className="text-[10px] bg-yellow-500 text-black px-1 rounded font-bold">PRO</span>
+                Gate.io Autonomous <span className="text-[10px] bg-yellow-500 text-black px-1 rounded font-bold">DEMO</span>
             </h1>
             <div className="flex items-center gap-3">
-               <span className={`flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border ${serverStatus === 'CONNECTED' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30'}`}>
-                 {serverStatus === 'CONNECTED' ? <Wifi size={10} /> : <WifiOff size={10} />} VERCEL
+               <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border bg-blue-500/10 text-blue-400 border-blue-500/30">
+                 NETLIFY
                </span>
                <span className="text-[10px] text-gray-500 font-mono">
-                   v1.0.6 • AI-BOT: {active ? 'RUNNING' : 'PAUSED'}
+                   AI-BOT: {active ? 'RUNNING' : 'PAUSED'}
                </span>
             </div>
           </div>
         </div>
 
         <div className="flex gap-2">
-            {/* Manual Controls */}
-            <div className="flex items-center gap-2 mr-4 border-r border-gray-700 pr-4">
-                <button className="flex items-center gap-1 px-3 py-1.5 rounded bg-emerald-600/20 text-emerald-400 border border-emerald-600/50 hover:bg-emerald-600 hover:text-white transition-all text-xs font-bold">
-                    BUY MARKET
-                </button>
-                <button className="flex items-center gap-1 px-3 py-1.5 rounded bg-rose-600/20 text-rose-400 border border-rose-600/50 hover:bg-rose-600 hover:text-white transition-all text-xs font-bold">
-                    SELL MARKET
-                </button>
-                {activeTrade && (
-                    <button className="flex items-center gap-1 px-3 py-1.5 rounded bg-gray-700 text-white border border-gray-500 hover:bg-white hover:text-black transition-all text-xs font-bold ml-2">
-                        CLOSE POSITION
-                    </button>
-                )}
-            </div>
+            <button onClick={() => setActive(!active)} className={`flex items-center gap-1 px-3 py-1.5 rounded border transition-all text-xs font-bold ${active ? 'bg-amber-600/20 text-amber-400 border-amber-600/50' : 'bg-green-600/20 text-green-400 border-green-600/50'}`}>
+                {active ? <StopCircle size={14}/> : <PlayCircle size={14}/>} {active ? 'PAUSE BOT' : 'START BOT'}
+            </button>
+            <button onClick={clearState} title="Reset Portfolio" className="p-2 rounded bg-red-900/20 text-red-400 border border-red-900/50 hover:bg-red-900/50">
+                <Trash2 size={16} />
+            </button>
 
-            <div className="bg-gray-900 rounded-lg p-1 flex border border-gray-700">
+            <div className="bg-gray-900 rounded-lg p-1 flex border border-gray-700 ml-2">
                 <button onClick={() => setViewMode('CHART')} className={`p-2 rounded transition-all ${viewMode === 'CHART' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white'}`}>
                     <BarChart3 size={18} />
                 </button>
@@ -124,7 +292,7 @@ export default function App() {
       </header>
 
       {/* PORTFOLIO WIDGET */}
-      {portfolio ? <PortfolioCard portfolio={portfolio} /> : null}
+      <PortfolioCard portfolio={portfolio} />
 
       {viewMode === 'CHART' ? (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -132,7 +300,7 @@ export default function App() {
         <div className="lg:col-span-9 space-y-4">
           <div className="flex justify-between items-center bg-gray-800 p-2 rounded-lg border border-gray-700">
              <div className="flex gap-1 overflow-x-auto pb-1 md:pb-0 scrollbar-hide">
-                {['BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'TON_USDT', 'DOGE_USDT'].map(pair => (
+                {PAIRS.map(pair => (
                 <button key={pair} onClick={() => setCurrentPair(pair)} className={`whitespace-nowrap px-3 py-1.5 rounded text-xs font-bold transition-colors ${currentPair === pair ? 'bg-indigo-600 text-white shadow-lg' : 'bg-gray-900 text-gray-400 hover:bg-gray-700'}`}>
                     {pair.split('_')[0]}
                     {lastAnalysis[pair]?.decision === 'BUY' && <span className="ml-1 text-emerald-400">•</span>}
@@ -154,7 +322,7 @@ export default function App() {
                 <div className="flex justify-between items-end mb-2 border-b border-gray-700 pb-2">
                 <div>
                     <h2 className="text-3xl font-bold text-white tracking-tighter flex items-center gap-3">
-                        ${currentData.price ? currentData.price.toFixed(currentData.price < 10 ? 4 : 2) : '---'}
+                        ${currentData.price ? currentData.price.toFixed(currentData.price < 10 ? 4 : 2) : 'Loading...'}
                     </h2>
                 </div>
                 <div className="text-right flex items-center gap-4">
@@ -168,13 +336,14 @@ export default function App() {
                 </div>
                 </div>
                 
-                <MarketChart 
-                    data={currentData.candles} 
-                    indicators={currentData.indicators} 
-                    currentPrice={currentData.price} 
-                    activeTrade={activeTrade}
-                    suggestedLevels={currentAnalysis?.decision !== 'HOLD' ? {sl: currentAnalysis?.recommendedSL || 0, tp: currentAnalysis?.recommendedTP || 0} : undefined}
-                />
+                {/* Note: In this demo architecture, we don't fetch full history client-side for the chart to keep code simple. 
+                    Ideally, we would call fetchHistory() here too. For now, we show a placeholder or basic line if data exists. 
+                    The API calculates indicators based on 100 candles. 
+                */}
+                <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
+                   Chart visualization requires full history fetch. <br/> 
+                   AI Analysis is running on Server based on 100 candles.
+                </div>
             </div>
 
             {/* Order Book Panel (Desktop) */}
@@ -189,7 +358,7 @@ export default function App() {
           </div>
 
           <div className="bg-gray-800 border border-gray-700 rounded-xl p-4 shadow-xl">
-             {currentData.indicators && <IndicatorCard indicators={currentData.indicators} />}
+             {currentData.indicators ? <IndicatorCard indicators={currentData.indicators} /> : <div className="text-center text-gray-500 text-sm py-4">Waiting for Analysis Update...</div>}
           </div>
         </div>
 
@@ -239,7 +408,7 @@ export default function App() {
             <div className="flex-1 overflow-y-auto space-y-1 pr-1">
                {logs.map((log, i) => (
                  <div key={i} className={`truncate ${log.type === 'error' ? 'text-rose-400' : log.type === 'success' ? 'text-emerald-400' : log.type === 'warn' ? 'text-yellow-400' : 'text-gray-500'}`}>
-                   <span className="opacity-40 mr-1">[{new Date(log.time || Date.now()).toLocaleTimeString().split(' ')[0]}]</span>
+                   <span className="opacity-40 mr-1">[{new Date(log.time).toLocaleTimeString().split(' ')[0]}]</span>
                    {log.msg}
                  </div>
                ))}
@@ -265,7 +434,7 @@ export default function App() {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-700">
-                            {['BTC_USDT', 'ETH_USDT', 'SOL_USDT', 'TON_USDT', 'DOGE_USDT'].map(pair => {
+                            {PAIRS.map(pair => {
                                 const analysis = lastAnalysis[pair];
                                 return (
                                 <tr key={pair} className="hover:bg-gray-700/30">
