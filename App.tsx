@@ -72,64 +72,76 @@ export default function App() {
       }
   };
 
-  // --- Trading Engine Loop ---
+  // --- Core Analysis Function ---
+  const performAnalysis = async (pairToAnalyze: string) => {
+    try {
+        setServerStatus('ANALYZING');
+        // Call Serverless Function for Heavy Analysis
+        const res = await fetch('/api/cron', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pair: pairToAnalyze })
+        });
+        
+        if (!res.ok) throw new Error("API Error");
+        const data = await res.json();
+        
+        if (data.success) {
+            const { price, analysis, indicators, candles } = data;
+            
+            // Update Market Data State
+            setMarketData(prev => ({
+                ...prev,
+                [pairToAnalyze]: {
+                    pair: pairToAnalyze,
+                    price,
+                    candles: candles || [], 
+                    timeframe: '5m',
+                    indicators,
+                    lastUpdated: Date.now()
+                }
+            }));
+
+            setLastAnalysis(prev => ({
+                ...prev,
+                [pairToAnalyze]: analysis
+            }));
+
+            // --- EXECUTE TRADING LOGIC (CLIENT SIDE) ---
+            handleTradingLogic(pairToAnalyze, price, analysis);
+            return true;
+        }
+    } catch (e) {
+        console.error("Analysis Error:", e);
+        setServerStatus('ERROR');
+        return false;
+    } finally {
+        setServerStatus('IDLE');
+    }
+  };
+
+  // --- Effect: Analyze Current Pair Immediately on Change ---
+  useEffect(() => {
+      performAnalysis(currentPair);
+  }, [currentPair]);
+
+  // --- Effect: Background Trading Loop ---
   useEffect(() => {
     if (!active) return;
 
     const runTradingCycle = async () => {
-        setServerStatus('ANALYZING');
+        // Randomly pick a pair to analyze for background trading opportunities
+        const randomPair = PAIRS[Math.floor(Math.random() * PAIRS.length)];
         
-        // 1. Select a random pair to analyze (round robin would be better but random avoids clogging)
-        // For demo, we analyze ONE pair per cycle to be gentle on API
-        const pairToAnalyze = PAIRS[Math.floor(Math.random() * PAIRS.length)];
-        
-        try {
-            // Call Serverless Function for Heavy Analysis
-            const res = await fetch('/api/cron', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ pair: pairToAnalyze })
-            });
-            
-            if (!res.ok) throw new Error("API Error");
-            const data = await res.json();
-            
-            if (data.success) {
-                const { price, analysis, indicators } = data;
-                
-                // Update Market Data State
-                setMarketData(prev => ({
-                    ...prev,
-                    [pairToAnalyze]: {
-                        pair: pairToAnalyze,
-                        price,
-                        candles: [], // API doesn't return candles array to save bandwidth, only indicators
-                        timeframe: '5m',
-                        indicators,
-                        lastUpdated: Date.now()
-                    }
-                }));
-
-                setLastAnalysis(prev => ({
-                    ...prev,
-                    [pairToAnalyze]: analysis
-                }));
-
-                // --- EXECUTE TRADING LOGIC (CLIENT SIDE) ---
-                handleTradingLogic(pairToAnalyze, price, analysis);
-            }
-        } catch (e) {
-            console.error("Cycle Error:", e);
-            setServerStatus('ERROR');
-        } finally {
-            setServerStatus('IDLE');
+        // If the random pair is the current pair, we skip because the other useEffect handles it
+        if (randomPair !== currentPair) {
+            await performAnalysis(randomPair);
         }
     };
 
-    const interval = setInterval(runTradingCycle, 5000); // Run every 5 seconds
-    runTradingCycle(); // Run once immediately
+    const interval = setInterval(runTradingCycle, 4000); // Check other pairs every 4s
     return () => clearInterval(interval);
-  }, [active, portfolio, trades]); // Dependencies ensure we have fresh state
+  }, [active, portfolio, trades, currentPair]); 
 
   const handleTradingLogic = (pair: string, currentPrice: number, analysis: AIAnalysisResult) => {
       // 1. Manage Open Trades (TP/SL)
@@ -322,7 +334,7 @@ export default function App() {
                 <div className="flex justify-between items-end mb-2 border-b border-gray-700 pb-2">
                 <div>
                     <h2 className="text-3xl font-bold text-white tracking-tighter flex items-center gap-3">
-                        ${currentData.price ? currentData.price.toFixed(currentData.price < 10 ? 4 : 2) : 'Loading...'}
+                        ${currentData.price ? currentData.price.toFixed(currentData.price < 10 ? 4 : 2) : '---'}
                     </h2>
                 </div>
                 <div className="text-right flex items-center gap-4">
@@ -336,14 +348,13 @@ export default function App() {
                 </div>
                 </div>
                 
-                {/* Note: In this demo architecture, we don't fetch full history client-side for the chart to keep code simple. 
-                    Ideally, we would call fetchHistory() here too. For now, we show a placeholder or basic line if data exists. 
-                    The API calculates indicators based on 100 candles. 
-                */}
-                <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
-                   Chart visualization requires full history fetch. <br/> 
-                   AI Analysis is running on Server based on 100 candles.
-                </div>
+                <MarketChart 
+                    data={currentData.candles} 
+                    indicators={currentData.indicators} 
+                    currentPrice={currentData.price} 
+                    activeTrade={activeTrade}
+                    suggestedLevels={currentAnalysis?.decision !== 'HOLD' ? {sl: currentAnalysis?.recommendedSL || 0, tp: currentAnalysis?.recommendedTP || 0} : undefined}
+                />
             </div>
 
             {/* Order Book Panel (Desktop) */}

@@ -1,12 +1,22 @@
 import { Candle, Timeframe, OrderBookState } from '../types';
 
 const BASE_URL = 'https://api.gateio.ws/api/v4';
-const PROXY_URL = 'https://api.allorigins.win/raw?url=';
+// More stable proxy
+const PROXY_URL = 'https://corsproxy.io/?';
 
 // Detect environment
 const isServer = typeof window === 'undefined';
 
 const mapTimeframe = (tf: Timeframe) => tf; 
+
+const getHeaders = () => {
+    return {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        // User-Agent is crucial for server-side fetches to Gate.io to avoid 403 Forbidden
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    };
+};
 
 const generateMockCandles = (pair: string, count: number, startPrice?: number): Candle[] => {
   const now = Date.now();
@@ -39,13 +49,16 @@ export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): P
   const targetUrl = `${BASE_URL}/spot/candlesticks?currency_pair=${pair}&interval=${gateInterval}&limit=100`;
   
   // Use Proxy only in browser to avoid CORS. Server can hit Gate.io directly.
+  // Note: corsproxy.io appends the url directly
   const fetchUrl = isServer ? targetUrl : `${PROXY_URL}${encodeURIComponent(targetUrl)}`;
 
   try {
-    const response = await fetch(fetchUrl);
+    const response = await fetch(fetchUrl, { headers: getHeaders() });
     
-    // Gate.io might return 400/429 if rate limited
-    if (!response.ok) throw new Error(`Gate API Error: ${response.statusText}`);
+    if (!response.ok) {
+        console.warn(`Gate API Error ${response.status}: ${response.statusText}`);
+        throw new Error(`Gate API Error: ${response.statusText}`);
+    }
     
     const data = await response.json();
     if (!Array.isArray(data)) throw new Error('Invalid Data');
@@ -60,8 +73,7 @@ export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): P
     })).sort((a: Candle, b: Candle) => a.time - b.time);
 
   } catch (error) {
-    console.warn(`Fetch Error for ${pair}:`, error);
-    // Return mock data so the app doesn't crash
+    console.warn(`Fetch Error for ${pair}, using mock data`, error);
     return generateMockCandles(pair, 100);
   }
 };
@@ -71,7 +83,7 @@ export const fetchCurrentTicker = async (pair: string): Promise<{ last: number, 
   const fetchUrl = isServer ? targetUrl : `${PROXY_URL}${encodeURIComponent(targetUrl)}`;
 
   try {
-    const response = await fetch(fetchUrl);
+    const response = await fetch(fetchUrl, { headers: getHeaders() });
     if (!response.ok) return null;
     
     const data = await response.json();
@@ -82,18 +94,18 @@ export const fetchCurrentTicker = async (pair: string): Promise<{ last: number, 
       };
     }
   } catch (error) {
+    console.error("Ticker Fetch Error", error);
     return null;
   }
   return null;
 };
 
 export const fetchOrderBook = async (pair: string): Promise<OrderBookState | undefined> => {
-  // Limit 10 for performance in demo
   const targetUrl = `${BASE_URL}/spot/order_book?currency_pair=${pair}&limit=10`; 
   const fetchUrl = isServer ? targetUrl : `${PROXY_URL}${encodeURIComponent(targetUrl)}`;
 
   try {
-     const response = await fetch(fetchUrl);
+     const response = await fetch(fetchUrl, { headers: getHeaders() });
      if(!response.ok) return undefined;
      const data = await response.json();
      

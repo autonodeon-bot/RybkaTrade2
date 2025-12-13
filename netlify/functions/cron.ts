@@ -28,11 +28,13 @@ export const handler: Handler = async (event, context) => {
             };
         }
 
-        // 1. Fetch Real-time Data (Server-side fetch to avoid CORS or hide keys if needed)
-        const ticker = await fetchCurrentTicker(pair);
+        // 1. Fetch Real-time Data (Server-side fetch)
+        // We fetch 5m candles for indicators and chart
         const candles = await fetchHistory(pair, '5m');
+        const ticker = await fetchCurrentTicker(pair);
 
         if (!ticker || candles.length === 0) {
+             console.error(`Data fetch failed for ${pair}`);
              return { 
                 statusCode: 500, 
                 headers, 
@@ -46,6 +48,7 @@ export const handler: Handler = async (event, context) => {
         const indicators = calculateAllIndicators(candles);
         
         // 3. Perform AI Analysis
+        // Note: performDeepAnalysis internally might fetch more history (15m, 1h) if needed
         const analysis = await performDeepAnalysis(pair, currentPrice);
 
         return {
@@ -56,7 +59,8 @@ export const handler: Handler = async (event, context) => {
                 pair,
                 price: currentPrice,
                 analysis,
-                indicators, // Send back computed indicators for UI
+                indicators, 
+                candles, // Return candles so the frontend Chart can render
                 timestamp: Date.now()
             })
         };
