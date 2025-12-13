@@ -90,7 +90,7 @@ export default function App() {
                  {serverStatus === 'CONNECTED' ? <Wifi size={10} /> : <WifiOff size={10} />} VERCEL
                </span>
                <span className="text-[10px] text-gray-500 font-mono">
-                   v1.0.5 • AI-BOT: {active ? 'RUNNING' : 'PAUSED'}
+                   v1.0.6 • AI-BOT: {active ? 'RUNNING' : 'PAUSED'}
                </span>
             </div>
           </div>

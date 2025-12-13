@@ -6,7 +6,7 @@ export const TradeHistory = ({ trades }: { trades: Trade[] }) => {
   if (trades.length === 0) {
     return (
       <div className="p-8 text-center text-gray-500 border border-dashed border-gray-700 rounded-lg">
-        Нет активных или прошлых сделок. Система ожидает идеального входа (R/R > 1.5)...
+        Нет активных или прошлых сделок. Система ожидает идеального входа (R/R &gt; 1.5)...
       </div>
     );
   }
