@@ -83,6 +83,7 @@ export interface Trade {
   status: 'OPEN' | 'CLOSED';
   reason: string;
   trailingActive: boolean; // Is trailing stop activated?
+  strategyUsed?: string; // e.g., 'Conservative', 'Aggressive'
 }
 
 export interface PersonaVerdict {
@@ -110,6 +111,8 @@ export interface AIAnalysisResult {
   riskRewardRatio: number;
   reasoning: string;
   details: TimeframeAnalysis[];
+  dominantPersona?: string; // Which strategy won
+  externalSentiment?: number; // -1 to 1 (Added)
 }
 
 export interface MarketState {
@@ -119,5 +122,44 @@ export interface MarketState {
   timeframe: Timeframe;
   indicators: IndicatorValues | null;
   lastUpdated: number;
-  orderBook?: OrderBookState; // New Field
+  orderBook?: OrderBookState; 
+}
+
+// --- LEARNING TYPES ---
+export interface PersonaWeights {
+    conservative: number;
+    aggressive: number;
+    trend: number;
+}
+
+export interface LearningState {
+    weights: PersonaWeights;
+    epoch: number;
+    learningRate: number;
+    lastCorrection: number; // Timestamp
+}
+
+// --- EXTERNAL SIGNALS ---
+export type SignalProviderID = 'COINGECKO' | 'GROQ' | 'HUGGINGFACE' | 'SWISSBORG' | 'INCITE_AI' | 'PUMP_PARADE';
+
+export interface ExternalProviderConfig {
+    id: SignalProviderID;
+    name: string;
+    enabled: boolean;
+    apiKey?: string; 
+    apiSecret?: string; // Added for password/secret
+    requiresSecret?: boolean; // UI flag
+    url?: string;
+    description: string;
+}
+
+export interface ExternalSignalResult {
+    providerId: SignalProviderID;
+    name: string;
+    sentiment: number; // -1 (Strong Sell) to 1 (Strong Buy)
+    confidence: number; // 0 to 100
+    lastUpdated: number;
+    details?: string;
+    status: 'OK' | 'ERROR' | 'PENDING' | 'DISABLED' | 'AUTH_FAILED';
+    latencyMs?: number;
 }

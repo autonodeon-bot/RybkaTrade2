@@ -1,17 +1,17 @@
 
 import * as tf from '@tensorflow/tfjs';
-import { IndicatorValues, AIAnalysisResult, Timeframe, Candle, TimeframeAnalysis } from "../types";
+import { IndicatorValues, AIAnalysisResult, Timeframe, Candle, TimeframeAnalysis, PersonaWeights } from "../types";
 import { calculateAllIndicators } from '../utils/indicators';
 import { fetchHistory } from './gateApi';
 
-interface PersonaWeights {
+interface PersonaDefinition {
   name: string;
   weights: number[]; 
   bias: number;
 }
 
 // Updated Weights for more inputs (now 20 inputs)
-const PERSONAS: Record<string, PersonaWeights> = {
+const PERSONAS: Record<string, PersonaDefinition> = {
   conservative: {
     name: "Conservative",
     // Prioritize: RSI, Bollinger, SuperTrend, Keltner, VWAP
@@ -106,7 +106,12 @@ const analyzeTimeframe = (tfName: Timeframe, candles: Candle[]): TimeframeAnalys
   });
 };
 
-export const performDeepAnalysis = async (pair: string, currentPrice: number): Promise<AIAnalysisResult> => {
+export const performDeepAnalysis = async (
+    pair: string, 
+    currentPrice: number,
+    dynamicWeights?: PersonaWeights,
+    externalSentiment: number = 0 // New Parameter: Input from External AI Aggregator (-1 to 1)
+): Promise<AIAnalysisResult> => {
   const [candles5m, candles15m, candles1h] = await Promise.all([
     fetchHistory(pair, '5m'),
     fetchHistory(pair, '15m'),
@@ -126,6 +131,17 @@ export const performDeepAnalysis = async (pair: string, currentPrice: number): P
   const isSuperTrendBullish = ind1h.superTrend.direction === 1;
   const isVwapBullish = currentPrice > ind1h.vwap;
 
+  // Use Dynamic Weights or Default to balanced 1/1/1
+  const w = dynamicWeights || { conservative: 1, aggressive: 1, trend: 1 };
+  
+  // Normalize weights roughly
+  const totalW = w.conservative + w.aggressive + w.trend;
+  const nW = { 
+      cons: w.conservative / totalW, 
+      aggr: w.aggressive / totalW, 
+      trnd: w.trend / totalW 
+  };
+
   const calculateAggregateScore = (key: 'conservative' | 'aggressive' | 'trend') => {
     return (
       (analysis5m.personas[key].decision * 0.2) + 
@@ -138,20 +154,36 @@ export const performDeepAnalysis = async (pair: string, currentPrice: number): P
   const scoreConservative = calculateAggregateScore('conservative');
   const scoreAggressive = calculateAggregateScore('aggressive');
 
-  const totalScore = (scoreConservative + scoreAggressive + scoreTrend) / 3;
+  // Weighted Average based on Learning + External Sentiment Impact
+  // External sentiment can sway the score by up to 20%
+  let totalScore = (
+      (scoreConservative * nW.cons) + 
+      (scoreAggressive * nW.aggr) + 
+      (scoreTrend * nW.trnd)
+  );
+  
+  // Mix in External AI Sentiment
+  if (externalSentiment !== 0) {
+      totalScore = (totalScore * 0.8) + (externalSentiment * 0.2);
+  }
 
   let decision: 'BUY' | 'SELL' | 'HOLD' = 'HOLD';
   let confidence = Math.abs(totalScore) * 100;
+  let dominantPersona = 'Balanced';
   
+  if (Math.abs(scoreTrend) > Math.abs(scoreConservative) && Math.abs(scoreTrend) > Math.abs(scoreAggressive)) dominantPersona = 'Trend Follower';
+  if (Math.abs(scoreConservative) > Math.abs(scoreTrend) && Math.abs(scoreConservative) > Math.abs(scoreAggressive)) dominantPersona = 'Conservative';
+  if (Math.abs(scoreAggressive) > Math.abs(scoreTrend) && Math.abs(scoreAggressive) > Math.abs(scoreConservative)) dominantPersona = 'Aggressive';
+
   // Logic Refinement with New Indicators
-  if (totalScore > 0.3) {
+  if (totalScore > 0.35) {
       if (isSuperTrendBullish && isVwapBullish) {
           decision = 'BUY';
-          confidence += 10; // Boost confidence if above VWAP and SuperTrend
+          confidence += 10; 
       } else if (isTrendStrong && isSuperTrendBullish) {
           decision = 'BUY';
       }
-  } else if (totalScore < -0.3) {
+  } else if (totalScore < -0.35) {
       if (!isSuperTrendBullish && !isVwapBullish) {
           decision = 'SELL';
           confidence += 10;
@@ -160,34 +192,32 @@ export const performDeepAnalysis = async (pair: string, currentPrice: number): P
       }
   }
 
-  // Ichimoku Filter (Cloud Breakout check roughly)
   if (decision === 'BUY' && currentPrice < ind1h.ichimoku.tenkan) {
-      confidence -= 15; // Risky buy below Tenkan
+      confidence -= 15;
   }
 
-  // ATR Calculation for SL/TP (using Keltner/SuperTrend logic)
   const atr = ind1h.atr || (currentPrice * 0.01);
   let sl = 0, tp = 0;
   const rewardRatio = 2.0;
 
   if (decision === 'BUY') {
-    // SL below SuperTrend or recent Low
     sl = ind1h.superTrend.direction === 1 ? ind1h.superTrend.value : currentPrice - (atr * 2);
     tp = currentPrice + ((currentPrice - sl) * rewardRatio);
   } else if (decision === 'SELL') {
-    // SL above SuperTrend
     sl = ind1h.superTrend.direction === -1 ? ind1h.superTrend.value : currentPrice + (atr * 2);
     tp = currentPrice - ((sl - currentPrice) * rewardRatio);
   }
 
   confidence = Math.min(99, Math.max(0, confidence));
 
-  let reasoning = `Trend 1H: ${analysis1h.trend} (ST: ${isSuperTrendBullish?'Bull':'Bear'}). `;
-  reasoning += `VWAP: ${isVwapBullish?'>':'<'} Price. `;
+  let reasoning = `Strategy: ${dominantPersona}. `;
+  if (externalSentiment !== 0) reasoning += `Ext Sentiment: ${externalSentiment > 0 ? '+' : ''}${externalSentiment.toFixed(2)}. `;
+  reasoning += `Trend 1H: ${analysis1h.trend}. `;
+  
   if (decision !== 'HOLD') {
-      reasoning += `${decision} Signal. Conf: ${confidence.toFixed(0)}%. MFI: ${ind1h.mfi.toFixed(0)}.`;
+      reasoning += `${decision} Signal. Conf: ${confidence.toFixed(0)}%.`;
   } else {
-      reasoning += "No confluence found.";
+      reasoning += "Waiting for higher confluence.";
   }
 
   return {
@@ -198,6 +228,8 @@ export const performDeepAnalysis = async (pair: string, currentPrice: number): P
     recommendedTP: tp,
     riskRewardRatio: rewardRatio,
     reasoning,
-    details: [analysis5m, analysis15m, analysis1h]
+    details: [analysis5m, analysis15m, analysis1h],
+    dominantPersona,
+    externalSentiment
   };
 };

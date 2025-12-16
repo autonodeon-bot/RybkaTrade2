@@ -1,3 +1,4 @@
+
 import { Handler } from '@netlify/functions';
 import { fetchHistory, fetchCurrentTicker } from '../../services/gateApi';
 import { performDeepAnalysis } from '../../services/localAi';
@@ -18,7 +19,7 @@ export const handler: Handler = async (event, context) => {
 
     try {
         const body = event.body ? JSON.parse(event.body) : {};
-        const { pair } = body;
+        const { pair, weights, externalSentiment } = body; // Read weights and external signals from client
 
         if (!pair) {
             return { 
@@ -47,9 +48,8 @@ export const handler: Handler = async (event, context) => {
         // 2. Calculate Indicators
         const indicators = calculateAllIndicators(candles);
         
-        // 3. Perform AI Analysis
-        // Note: performDeepAnalysis internally might fetch more history (15m, 1h) if needed
-        const analysis = await performDeepAnalysis(pair, currentPrice);
+        // 3. Perform AI Analysis with injected weights (Learning) AND External Sentiment
+        const analysis = await performDeepAnalysis(pair, currentPrice, weights, externalSentiment || 0);
 
         return {
             statusCode: 200,

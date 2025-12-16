@@ -19,9 +19,13 @@ const getHeaders = () => {
 // --- Connection Check ---
 export const checkConnection = async (): Promise<boolean> => {
     try {
-        const res = await fetch(`${BINANCE_API}/ticker/price?symbol=BTCUSDT`);
+        // FIX: Do not hit Binance/Gate directly from client (CORS/451 errors).
+        // Ping our own Netlify function. If it returns 200, the backend is reachable
+        // and (presumably) the backend can talk to the exchange.
+        const res = await fetch('/.netlify/functions/orderbook?pair=BTC_USDT');
         return res.ok;
     } catch (e) {
+        console.error("Connection check failed:", e);
         return false;
     }
 };
@@ -49,13 +53,11 @@ const fetchBinanceHistory = async (pair: string, timeframe: Timeframe): Promise<
 };
 
 export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): Promise<Candle[]> => {
-  // 1. Try Gate.io (Direct if Server, or we assume this is called inside a server function mostly)
+  // IMPORTANT: This function should primarily be called server-side (in cron.ts).
+  // If called client-side, it might fail due to CORS unless proxied.
+  
+  // 1. Try Gate.io 
   try {
-      if (!isServer) {
-           // If called from client unexpectedly, assume we should probably delegate or fail, 
-           // but keeping basic fetch for now as history usually goes through cron.ts
-      }
-
       const gateInterval = mapTimeframe(timeframe);
       const targetUrl = `${BASE_URL}/spot/candlesticks?currency_pair=${pair}&interval=${gateInterval}&limit=100`;
       
@@ -75,7 +77,7 @@ export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): P
           }
       }
   } catch (error) {
-     console.warn("Gate API failed, switching to fallback...");
+     if (isServer) console.warn("Gate API failed, switching to fallback...");
   }
 
   // 2. Fallback: Binance
@@ -83,7 +85,7 @@ export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): P
       const binanceData = await fetchBinanceHistory(pair, timeframe);
       if (binanceData.length > 0) return binanceData;
   } catch (binanceError) {
-      console.warn("Binance Fallback failed", binanceError);
+      if (isServer) console.warn("Binance Fallback failed", binanceError);
   }
 
   throw new Error(`Failed to fetch real data for ${pair} from all sources.`);
