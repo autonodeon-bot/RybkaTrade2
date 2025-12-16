@@ -1,8 +1,6 @@
 import { Candle, Timeframe, OrderBookState } from '../types';
 
 const BASE_URL = 'https://api.gateio.ws/api/v4';
-// Using AllOrigins as it handles JSON responses better than corsproxy.io often
-const PROXY_URL = 'https://api.allorigins.win/get?url=';
 const BINANCE_API = 'https://api.binance.com/api/v3';
 
 // Detect environment
@@ -21,7 +19,6 @@ const getHeaders = () => {
 // --- Connection Check ---
 export const checkConnection = async (): Promise<boolean> => {
     try {
-        // Try simple fetch to Binance as it's most reliable for a connectivity check
         const res = await fetch(`${BINANCE_API}/ticker/price?symbol=BTCUSDT`);
         return res.ok;
     } catch (e) {
@@ -31,7 +28,6 @@ export const checkConnection = async (): Promise<boolean> => {
 
 // Helper: Fetch from Binance (High Availability Fallback)
 const fetchBinanceHistory = async (pair: string, timeframe: Timeframe): Promise<Candle[]> => {
-    // Map Gate pair (BTC_USDT) to Binance (BTCUSDT)
     const symbol = pair.replace('_', ''); 
     const intervalMap: Record<string, string> = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h' };
     
@@ -42,7 +38,6 @@ const fetchBinanceHistory = async (pair: string, timeframe: Timeframe): Promise<
     
     const data = await res.json();
     
-    // Binance Format: [Open Time, Open, High, Low, Close, Volume, ...]
     return data.map((d: any[]) => ({
         time: d[0],
         open: parseFloat(d[1]),
@@ -54,34 +49,20 @@ const fetchBinanceHistory = async (pair: string, timeframe: Timeframe): Promise<
 };
 
 export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): Promise<Candle[]> => {
-  // 1. Try Gate.io (Via Proxy if Client, Direct if Server)
+  // 1. Try Gate.io (Direct if Server, or we assume this is called inside a server function mostly)
   try {
+      if (!isServer) {
+           // If called from client unexpectedly, assume we should probably delegate or fail, 
+           // but keeping basic fetch for now as history usually goes through cron.ts
+      }
+
       const gateInterval = mapTimeframe(timeframe);
       const targetUrl = `${BASE_URL}/spot/candlesticks?currency_pair=${pair}&interval=${gateInterval}&limit=100`;
       
-      const fetchUrl = isServer ? targetUrl : `${PROXY_URL}${encodeURIComponent(targetUrl)}`;
-      
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4000); // 4s timeout
-
-      const response = await fetch(fetchUrl, { 
-          headers: getHeaders(),
-          signal: controller.signal 
-      });
-      clearTimeout(timeoutId);
+      const response = await fetch(targetUrl, { headers: getHeaders() });
 
       if (response.ok) {
-          const rawData = await response.json();
-          // Handle 'allorigins' proxy wrapper
-          let data = rawData;
-          if (rawData.contents) {
-              try {
-                data = JSON.parse(rawData.contents);
-              } catch (e) {
-                  throw new Error("Proxy returned invalid content");
-              }
-          }
-
+          const data = await response.json();
           if (Array.isArray(data)) {
                return data.map((d: string[]) => ({
                   time: parseFloat(d[0]) * 1000,
@@ -97,7 +78,7 @@ export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): P
      console.warn("Gate API failed, switching to fallback...");
   }
 
-  // 2. High-Availability Fallback: Binance API (Direct, often CORS friendly or handles via simple proxy)
+  // 2. Fallback: Binance
   try {
       const binanceData = await fetchBinanceHistory(pair, timeframe);
       if (binanceData.length > 0) return binanceData;
@@ -105,24 +86,15 @@ export const fetchHistory = async (pair: string, timeframe: Timeframe = '5m'): P
       console.warn("Binance Fallback failed", binanceError);
   }
 
-  // 3. FAIL: Throw Error instead of returning Mock Data
   throw new Error(`Failed to fetch real data for ${pair} from all sources.`);
 };
 
 export const fetchCurrentTicker = async (pair: string): Promise<{ last: number, volume: number } | null> => {
-  // Try Gate
   try {
     const targetUrl = `${BASE_URL}/spot/tickers?currency_pair=${pair}`;
-    const fetchUrl = isServer ? targetUrl : `${PROXY_URL}${encodeURIComponent(targetUrl)}`;
-    
-    const response = await fetch(fetchUrl, { headers: getHeaders() });
+    const response = await fetch(targetUrl, { headers: getHeaders() });
     if (response.ok) {
-        const raw = await response.json();
-        let data = raw;
-        if (raw.contents) {
-             data = JSON.parse(raw.contents);
-        }
-
+        const data = await response.json();
         if (Array.isArray(data) && data.length > 0) {
             return {
                 last: parseFloat(data[0].last),
@@ -132,7 +104,6 @@ export const fetchCurrentTicker = async (pair: string): Promise<{ last: number, 
     }
   } catch (e) {}
 
-  // Fallback to Binance Ticker
   try {
       const symbol = pair.replace('_', '');
       const res = await fetch(`${BINANCE_API}/ticker/24hr?symbol=${symbol}`);
@@ -149,27 +120,35 @@ export const fetchCurrentTicker = async (pair: string): Promise<{ last: number, 
 };
 
 export const fetchOrderBook = async (pair: string): Promise<OrderBookState | undefined> => {
-  const targetUrl = `${BASE_URL}/spot/order_book?currency_pair=${pair}&limit=10`; 
-  const fetchUrl = isServer ? targetUrl : `${PROXY_URL}${encodeURIComponent(targetUrl)}`;
-
-  try {
-     const response = await fetch(fetchUrl, { headers: getHeaders() });
-     if(!response.ok) return undefined;
-     
-     const raw = await response.json();
-     let data = raw;
-     if (raw.contents) {
-         data = JSON.parse(raw.contents);
-     }
-     
-     if(data.bids && data.asks) {
-         return {
-             bids: data.bids.map((b: string[]) => ({ price: parseFloat(b[0]), amount: parseFloat(b[1]), total: 0 })),
-             asks: data.asks.map((a: string[]) => ({ price: parseFloat(a[0]), amount: parseFloat(a[1]), total: 0 })).reverse()
+  if (isServer) {
+      // Server-side: Fetch directly from Gate.io (No CORS issues)
+      const targetUrl = `${BASE_URL}/spot/order_book?currency_pair=${pair}&limit=10`; 
+      try {
+         const response = await fetch(targetUrl, { headers: getHeaders() });
+         if(!response.ok) return undefined;
+         
+         const data = await response.json();
+         if(data.bids && data.asks) {
+             return {
+                 bids: data.bids.map((b: string[]) => ({ price: parseFloat(b[0]), amount: parseFloat(b[1]), total: 0 })),
+                 asks: data.asks.map((a: string[]) => ({ price: parseFloat(a[0]), amount: parseFloat(a[1]), total: 0 })).reverse()
+             }
          }
-     }
-  } catch(e) {
-      // console.warn("Orderbook fetch failed");
+      } catch(e) { return undefined; }
+  } else {
+      // Client-side: Proxy through our own Netlify function to avoid CORS
+      try {
+          const response = await fetch(`/.netlify/functions/orderbook?pair=${pair}`);
+          if (!response.ok) return undefined;
+          const data = await response.json();
+          
+          if(data.bids && data.asks) {
+             return {
+                 bids: data.bids.map((b: string[]) => ({ price: parseFloat(b[0]), amount: parseFloat(b[1]), total: 0 })),
+                 asks: data.asks.map((a: string[]) => ({ price: parseFloat(a[0]), amount: parseFloat(a[1]), total: 0 })).reverse()
+             }
+          }
+      } catch (e) { return undefined; }
   }
   return undefined;
 };

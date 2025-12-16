@@ -54,7 +54,7 @@ export default function App() {
     const testGate = async () => {
         const isOk = await checkConnection();
         setGateStatus(isOk ? 'OK' : 'ERROR');
-        if (!isOk) addLog('Внимание: Проблема с подключением к API биржи (Client).', 'error');
+        if (!isOk) addLog('Внимание: Проблема с подключением к API биржи.', 'error');
     };
     testGate();
 
@@ -89,9 +89,8 @@ export default function App() {
     try {
         let data;
         
-        // Request to serverless function (which fetches Real Data)
-        // Uses /api/cron which is redirected to /.netlify/functions/cron in production via netlify.toml
-        const res = await fetch('/api/cron', {
+        // Use direct path to Netlify function to avoid any redirect issues
+        const res = await fetch('/.netlify/functions/cron', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ pair: pairToAnalyze })
@@ -106,7 +105,7 @@ export default function App() {
             }
         } else {
             if (res.status === 404) {
-                 throw new Error("API Endpoint not found (404). Check Netlify configuration.");
+                 throw new Error("API Endpoint not found (404). Backend is not deployed correctly.");
             }
             throw new Error(`Server API Error: ${res.status}`);
         }
@@ -141,9 +140,8 @@ export default function App() {
     } catch (e: any) {
         console.error("Critical Analysis Error:", e);
         setServerStatus('ERROR');
-        // Reduce log spam for 404s
         const is404 = e.message.includes('404');
-        addLog(`Ошибка данных ${pairToAnalyze}: ${is404 ? 'API недоступен (404)' : e.message}`, 'error');
+        addLog(`Ошибка данных ${pairToAnalyze}: ${is404 ? 'API 404 (Проверьте деплой)' : e.message}`, 'error');
         setGateStatus('ERROR');
         return false;
     } finally {
@@ -389,6 +387,7 @@ export default function App() {
                         <WifiOff size={48} className="mb-4" />
                         <p className="text-lg font-bold">Нет подключения к данным</p>
                         <p className="text-sm text-rose-300/60 mt-2">API Недоступен (404) или заблокирован.</p>
+                        <p className="text-xs text-gray-500 mt-4">Проверьте netlify.toml и деплой функций</p>
                     </div>
                 ) : (
                     <MarketChart 
