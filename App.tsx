@@ -54,7 +54,7 @@ export default function App() {
     const testGate = async () => {
         const isOk = await checkConnection();
         setGateStatus(isOk ? 'OK' : 'ERROR');
-        if (!isOk) addLog('Внимание: Проблема с подключением к API биржи.', 'error');
+        if (!isOk) addLog('Внимание: Проблема с подключением к API биржи (Client).', 'error');
     };
     testGate();
 
@@ -90,6 +90,7 @@ export default function App() {
         let data;
         
         // Request to serverless function (which fetches Real Data)
+        // Uses /api/cron which is redirected to /.netlify/functions/cron in production via netlify.toml
         const res = await fetch('/api/cron', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -104,6 +105,9 @@ export default function App() {
                 throw new Error(json.error || 'API returned failure');
             }
         } else {
+            if (res.status === 404) {
+                 throw new Error("API Endpoint not found (404). Check Netlify configuration.");
+            }
             throw new Error(`Server API Error: ${res.status}`);
         }
 
@@ -137,7 +141,9 @@ export default function App() {
     } catch (e: any) {
         console.error("Critical Analysis Error:", e);
         setServerStatus('ERROR');
-        addLog(`Ошибка получения данных для ${pairToAnalyze}: ${e.message}`, 'error');
+        // Reduce log spam for 404s
+        const is404 = e.message.includes('404');
+        addLog(`Ошибка данных ${pairToAnalyze}: ${is404 ? 'API недоступен (404)' : e.message}`, 'error');
         setGateStatus('ERROR');
         return false;
     } finally {
@@ -305,7 +311,7 @@ export default function App() {
                    'bg-gray-700/50 text-gray-400 border-gray-600'
                }`}>
                  {gateStatus === 'OK' ? <CheckCircle2 size={12} /> : gateStatus === 'ERROR' ? <XCircle size={12} /> : <Loader2 size={12} className="animate-spin" />}
-                 GATE.IO / BINANCE DATA
+                 GATE.IO / BINANCE
                </span>
                <span className="text-[10px] text-gray-500 font-mono">
                    AI-BOT: {active ? 'RUNNING' : 'PAUSED'}
@@ -382,7 +388,7 @@ export default function App() {
                     <div className="h-full flex flex-col items-center justify-center text-rose-400">
                         <WifiOff size={48} className="mb-4" />
                         <p className="text-lg font-bold">Нет подключения к данным</p>
-                        <p className="text-sm text-rose-300/60 mt-2">Gate.io и Binance API недоступны</p>
+                        <p className="text-sm text-rose-300/60 mt-2">API Недоступен (404) или заблокирован.</p>
                     </div>
                 ) : (
                     <MarketChart 
